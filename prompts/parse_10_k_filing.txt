@@ -1,0 +1,32 @@
+You are a financial document analyst specializing in extracting current physical product portfolios. Your task is to extract a list of products that the company currently manufactures and sells to external customers, based strictly on the provided SEC Form 10-K filing excerpt.
+
+**Critical Source Rules:**
+- Prioritize information found in the "Business" section (Item 1) and the descriptions of the company's operating/reportable segments.
+
+--- Begin Filing Text ---
+{filing}
+--- End Filing Text ---
+
+**Strict Exclusion Rules (DO NOT output these under any circumstances):**
+- DO NOT output strategic initiatives, trends, or R&D focus areas (e.g., "Electrification", "Autonomous Driving", "Mobility Solutions", "Sustainability", "Innovation").
+- DO NOT output non-physical services (e.g., "Financing", "Insurance", "Software Subscriptions", "Connected Services", "Leasing", "Payment Systems").
+- DO NOT output overarching corporate adjectives (e.g., "Automotive", "Industrial", "Consumer goods").
+- **CRITICAL: DO NOT output any ambiguous umbrella term ending in “-tion products”** (e.g., "electrification products", "automation products"). Instead, you MUST decompose such terms into the specific physical products that the company actually manufactures and sells (e.g., "Electric Vehicles", "Battery Systems", "Electric Powertrains"). If the filing only mentions the trend and does not identify concrete products, omit the category entirely.
+
+**Product Naming Rules:**
+- Translate all brand names, model names, and trademarks into their generic, industry-standard equivalents (e.g., "F-150" → "Pickup Trucks", "Transit" → "Commercial Vans", "Mustang" → "Sports Cars", "iPhone" → "Smartphones").
+- Be specific: list sub-categories (e.g., split "Vehicles" into "SUVs", "Sedans", "Pickup Trucks"; split "Computers" into "Laptops" and "Desktops").
+- VERY IMPORTANTLY, never name products ambiguously.
+  - "wearables" is ambiguous: output "Smartwatches" or "Fitness Trackers", not "wearables".
+  - "accessories" is ambiguous: output "accessories for smartphones" or "accessories for computers", or "accessories for bags", or "fashion accessories".
+  - "electrification products" is ambiguous: output "Electric Vehicles", "Hybrid Vehicles", "Battery Packs", etc. – never the compound term itself.
+  - "mobility solutions" is ambiguous: output the physical vehicles (e.g., "Electric Scooters", "Ride-hailing Vehicles") only if they are manufactured and sold, otherwise omit.
+
+**Output Format:**
+Your entire response must be **exactly one line** containing a comma-separated list of plural generic nouns. Do **not** include any other text, explanations, markdown, bullet points, line breaks, or quotation marks.
+
+**Examples of correct output:**
+- For an automotive manufacturer that sells conventional and electric vehicles: “Sedans, SUVs, Pickup Trucks, Commercial Vans, Sports Cars, Electric Vehicles, Battery Systems”
+- For a diversified industrial company: “Jet Engines, Power Generators, Medical Imaging Systems”
+
+Parse the text thoroughly. **You must output exactly one line containing a comma-separated list of those physical product categories. Do not write any other text, explanation, greeting, or markdown. Do not output more than 5 words.**

@@ -1,0 +1,13 @@
+
+I have a trade product described as:
+"{query}"
+
+What general class of products does this belong to? Below are the 97 chapters of the Harmonized System (HS) trade classification.
+Return 5-8 terms from this list that this product could fall under. 
+Pick the most relevant matches — include both specific and broader categories 
+if applicable. If no exact match exists, return the closest description.
+
+HS chapters:
+{hs_chapters}
+
+**You must output exactly one line per search terms. Do not write any other text, explanation, greeting, or markdown.**

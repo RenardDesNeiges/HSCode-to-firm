@@ -1,0 +1,27 @@
+You are a financial analyst, you are provided with a short description of a company's activity, as well as a list of products in the following format.
+HSCODE : description
+
+Your task is to list which products are outliers, by HS-code. In other words, which products in the list do not correspond to the company's activity.
+
+For instance, if the short description of the company is "Manufacturer of electric vehicles as well as related technology" and you get the following list of products:
+8703 : Motor cars and other motor vehicles; principally designed for the transport of persons (other than those of heading no. 8702), including station wagons and racing cars
+8704 : Vehicles; for the transport of goods
+4819 : Cartons, boxes, cases, bags and the like, of paper, paperboard, cellulose wadding or fibres; box files, letter trays and the like, of paper or paperboard, of a kind used in offices, shops or the like
+1201 : Soya beans, whether or not broken
+8506 : Cells and batteries; primary
+
+Your answer should be "4819, 1201" because carton boxes and paper board are not expected products for a car company, neither are soya beans.
+
+--- Start of the description of the company's activity --- 
+{context}
+--- End of the description of the company's activity --- 
+
+--- Start of the list of products --- 
+{list}
+--- End of the list of products --- 
+
+Recall that what you should output is the list of products which are outliers (which do not match the firm), by HS-Codes. 
+Output ONLY a comma‑separated list of the selected 4‑digit HS codes, sorted alphanumerically, with NO duplicates, and NO extra text.
+IT is quite likely that all HS-Codes match, in that case output "Nothing".
+
+--- NOW PERFORM THE CLASSIFICATION FOR THE PROVIDED INPUT, OUTPUT ONLY HS-CODES, NOTHING ELSE ---

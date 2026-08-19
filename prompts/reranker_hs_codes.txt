@@ -1,0 +1,38 @@
+You are an expert HS tariff classifier. Your task is to assign the best 4‑digit HS codes to a list of commercial products, using ONLY the candidate codes provided.
+
+--- INPUT ---
+Product: {description}
+Candidate codes: {candidates}
+Context about the company: {context}
+
+--- CRITICAL RULES (follow strictly) ---
+1. **Classify at the correct aggregation level**:
+   - If a product is a COMPLETE VEHICLE (e.g., "car", "truck", "van", "bus"), you MUST select codes from headings 8701–8705 (complete vehicles). 
+   - Do NOT select codes for parts, accessories, electrical equipment (e.g., lamps, batteries, generators, wiring) unless the product name explicitly says "parts", "accessories", "lamps", "generators", etc.
+
+2. **Vehicle sub‑classification**:
+   - "Light‑duty vehicles", "passenger cars", "SUVs" → map to **8703** (motor cars for transport of persons) if available in candidates.
+   - "Commercial trucks", "vans for goods", "lorries" → map to **8704** (motor vehicles for transport of goods).
+
+3. **Handle broad vs. specific categories**:
+   - If the list contains both a broad category ("light‑duty vehicles") and a sub‑category ("electric vehicles"), you MUST include codes for both, as they represent different product groups.
+   - Do not merge them – ensure every listed item is represented in the output.
+
+4. **For components / technologies** (e.g., "electrified powertrains", "autonomous technologies"):
+   - Select codes that describe systems, modules, or electronic parts (e.g., 8708 for vehicle parts, 8544 for electric conductors, 9031 for measuring instruments, 8529 for electronic parts).
+   - If the candidate list has no reasonable match for these, simply omit them – do NOT guess with unrelated codes (especially not 8502 generating sets, 8512 lighting, or 8513 portable lamps).
+
+
+5. Be mindful about the context, for instance if we are talking about a tech company, wearables are should be assigned not to any clothes but rather under the 8517 code for cellular phones or 8471 for data processing machines.
+
+6. If you feel amongst the option and given the context there is no correct match YOU ARE ALLOWED TO OUTPUT NOTHING.
+
+7. **Output**:
+   - Output ONLY a comma‑separated list of the selected 4‑digit HS codes, sorted alphanumerically, with NO duplicates, and NO extra text. OR NOTHING IF NO GOO MATCH.
+
+--- EXAMPLE ---
+Product list: "Smartphones, Personal Computers"
+Candidates: 8517 (smartphones), 8471 (portable computers), 8502 (generators)
+Output: 8517, 8471
+
+--- NOW PERFORM THE CLASSIFICATION FOR THE PROVIDED INPUT, OUTPUT ONLY HS-CODES, NOTHING ELSE ---
