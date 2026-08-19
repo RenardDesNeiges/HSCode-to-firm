@@ -1,6 +1,7 @@
 # Reproduction Repo - Product-to-Firm Mapping from SEC 10-K Filings
 
 This repository holds the replication files that build a product-to-firm mapping from SEC 10-K filings. The pipeline reads a list of CIKs, downloads each firm's latest 10-K filing, extracts the physical product portfolio, and maps each product to 4-digit HS codes. The resulting mapping links HS codes to firms and can be used with Compustat or other firm-level panels.
+This pipeline is meant to be ran to replicate the results of the [regressions of my master thesis](https://github.com/RenardDesNeiges/USChina_thesis_reproduction).
 
 ```mermaid
 flowchart TD
