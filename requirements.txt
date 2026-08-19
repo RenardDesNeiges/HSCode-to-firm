@@ -1,0 +1,13 @@
+# Required packages to run the SEC 10-K to HS codes pipeline.
+# Verified with Python 3.13.
+
+edgar
+openrouter
+tiktoken
+deepseek_tokenizer
+sentence-transformers
+pandas
+numpy
+tqdm
+openpyxl
+requests
