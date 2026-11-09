@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 DEFAULT_PATH = '~/Documents/Datasets/Compustat/computstat_northamerica_complete_download_24042026.csv'
 DEFAULT_DB_PATH = 'data/hsmap.db'
+SHORT_LIMIT = 10_000
 
 parser = argparse.ArgumentParser(
     description='Initialize the filings SQLite database from a Compustat CSV file.'
@@ -24,10 +25,16 @@ parser.add_argument(
     default=DEFAULT_DB_PATH,
     help=f'path to the SQLite database to create (default: {DEFAULT_DB_PATH})',
 )
+parser.add_argument(
+    '--short',
+    action='store_true',
+    help=f'only load the first {SHORT_LIMIT} firm-year entries into the database '
+         '(useful for a small debug database)',
+)
 args = parser.parse_args()
 
-path = args.path
-db_path = args.db_path
+path = os.path.expanduser(args.path)
+db_path = os.path.expanduser(args.db_path)
 
 # Never silently overwrite an existing database
 if os.path.exists(db_path):
@@ -67,6 +74,10 @@ data = data.sort_values(
 data = data.drop_duplicates(subset=["cik", "fyear"], keep="last")
 print(f'{data.shape[0]} firm-year pairs after removing duplicates')
 
+if args.short:
+    data = data.head(SHORT_LIMIT)
+    print(f'{data.shape[0]} firm-year pairs after limiting to the first {SHORT_LIMIT} (--short)')
+
 # Connect (creates the file if it doesn't exist)
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
@@ -78,7 +89,8 @@ CREATE TABLE IF NOT EXISTS filings (
     cik        TEXT    NOT NULL,
     fyear      TEXT    NOT NULL,
     tenk_section TEXT,
-    hs_codes   TEXT
+    hs_codes   TEXT,
+    tag        TEXT    NOT NULL DEFAULT 'UNPROCESSED'
 );
 """)
 
@@ -90,8 +102,8 @@ conn.commit()
 for i in tqdm(range(data.shape[0])):
     row = data.iloc[i]
     cursor.execute(
-        "INSERT INTO filings (cik, fyear, tenk_section, hs_codes) VALUES (?, ?, ?, ?)",
-        (str(int(row['cik'])), str(row['fyear']), None, None),
+        "INSERT INTO filings (cik, fyear, tenk_section, hs_codes, tag) VALUES (?, ?, ?, ?, ?)",
+        (str(int(row['cik'])), str(row['fyear']), None, None, 'UNPROCESSED'),
     )
     conn.commit()
 
