@@ -1,16 +1,42 @@
 # %%
 import os
+import argparse
 import sqlite3
 import pandas as pd
 from tqdm.auto import tqdm      
 from concurrent.futures import ProcessPoolExecutor
-os.environ['EDGAR_RATE_LIMIT_PER_SEC'] = '7'
-from src.sec_utilities import get_section_10k
 
 db_path = 'data/hsmap.db'
 chunk_size = 20 
+rate_limit = 7
 
-# %%
+os.environ['EDGAR_RATE_LIMIT_PER_SEC'] = os.environ.get('EDGAR_RATE_LIMIT_PER_SEC', str(rate_limit))
+
+from src.sec_utilities import get_section_10k
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Backfill tenk_section for filings using SEC 10-K data."
+    )
+    parser.add_argument(
+        '--db-path',
+        default=db_path,
+        help="Path to the SQLite database file (default: %(default)s).",
+    )
+    parser.add_argument(
+        '--chunk-size',
+        type=int,
+        default=chunk_size,
+        help="Number of rows to process per batch (default: %(default)s).",
+    )
+    parser.add_argument(
+        '--rate-limit',
+        type=int,
+        default=rate_limit,
+        help="Max EDGAR requests per second (default: %(default)s).",
+    )
+    return parser.parse_args()
+
 def iter_null_batches(conn, chunk=chunk_size):
     """Yield batches of rows where tenk_section IS NULL, newest key ascending."""
     last_key = -1
@@ -41,9 +67,12 @@ def process(row):
     return (out, tag, key)
 
 
-# %%
 def main():
-    with sqlite3.connect(db_path) as conn:
+    args = parse_args()
+    # Set in the parent before spawning workers so they inherit the value at import time.
+    os.environ['EDGAR_RATE_LIMIT_PER_SEC'] = str(args.rate_limit)
+
+    with sqlite3.connect(args.db_path) as conn:
         total = conn.execute(
             "SELECT COUNT(*) FROM filings WHERE tenk_section IS NULL"
         ).fetchone()[0]
@@ -52,7 +81,7 @@ def main():
 
         try:
             with ProcessPoolExecutor(max_workers=os.cpu_count() or 1) as pool:
-                for batch in iter_null_batches(conn, chunk=chunk_size):
+                for batch in iter_null_batches(conn, chunk=args.chunk_size):
                     # here the idea is to paralelize the requests
                     updates = list(pool.map(process, batch))
                     conn.executemany(
@@ -67,6 +96,5 @@ def main():
             pbar.close()
 
 
-# %%
 if __name__ == "__main__":
     main()
