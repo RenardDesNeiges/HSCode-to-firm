@@ -6,3 +6,4 @@ src/__pycache__/*
 sec-edgar-filings/*
 config.py
 .vscode/settings.json
+*.ipynb
