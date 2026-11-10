@@ -46,29 +46,7 @@ def query_a_model_openai(prompt, model_name="qwen/qwen-2.5-7b-instruct"):
       )
       return response.choices[0].message.content
 
-def query_a_model_ollama(prompt, sysprompt,model_name="qwen2.5:7b",schema=None):
-   OLLAMA_URL = "http://localhost:11434/api/generate"
-   # Send request to Ollama
-   payload = {
-      "model": model_name,
-      "prompt": prompt,
-      "system": sysprompt,
-      "stream": False,
-      "options": {
-         "temperature": 0,
-         "seed": 42,          # Use any fixed integer seed
-      }
-   }
-   if schema is not None:
-      payload['schema'] = schema
-
-   response = requests.post(OLLAMA_URL, json=payload)
-   response.raise_for_status()
-   result = response.json()
-   return result
-
-
-def generate_search_terms(product, local=False):
+def generate_search_terms(product):
    prompt_path = os.path.join(PROMPT_DIR, "generate_search_terms.txt")
    with open(prompt_path, "r") as f:
     prompt_template = f.read()
@@ -77,52 +55,38 @@ def generate_search_terms(product, local=False):
    hs_chapters = hscodes[hscodes['Level']==2]['Description'].to_string(index=False, header=False)
 
    prompt = prompt_template.replace("{query}", product).replace("{hs_chapters}", hs_chapters)
-   if local:
-      search_terms = query_a_model_ollama(prompt, "", "qwen2.5:7b", {"type": "object", "properties": {"search_terms": {"type": "array", "items": {"type": "string"}}}, "required": ["search_terms"]})['response']
-   else:
-      search_terms = query_a_model_openai(prompt, "qwen/qwen-2.5-7b-instruct")
+   search_terms = query_a_model_openai(prompt, "qwen/qwen-2.5-7b-instruct")
    return search_terms
 
 
-def refine_product_list(first_guess_list,context,local):
+def refine_product_list(first_guess_list,context):
    prompt_path = os.path.join(PROMPT_DIR, "cleanup_the_data.txt")
    with open(prompt_path, 'r') as f:
       prompt_template = f.read()
    prompt = prompt_template.replace('{context}', context).\
       replace('{list}',first_guess_list)
-   if local:
-      out = query_a_model_ollama(prompt,"",MODEL)["response"]
-   else:
-      out = query_a_model_openai(prompt,"deepseek/deepseek-v4-flash")
+   out = query_a_model_openai(prompt,"deepseek/deepseek-v4-flash")
    to_remove = {e for e in out.replace(' ','').split(',') if e.isdigit()}
    return to_remove
 
-def parse_filing(filing,local=False):
+def parse_filing(filing):
    prompt_path = os.path.join(PROMPT_DIR, "parse_10_k_filing.txt")
    with open(prompt_path, 'r') as f:
       prompt_template = f.read()
    prompt = prompt_template.replace('{filing}', filing)
-   if local:
-      out = query_a_model_ollama(prompt,"",MODEL)["response"]
-   else:
-      out = query_a_model_openai(prompt,"deepseek/deepseek-v4-flash")
+   out = query_a_model_openai(prompt,"deepseek/deepseek-v4-flash")
    return out
 
-
-
-def parse_filing_context(filing,local=False):
+def parse_filing_context(filing):
    prompt_path = os.path.join(PROMPT_DIR, "generate_context_10k.txt")
    with open(prompt_path, 'r') as f:
       prompt_template = f.read()
    prompt = prompt_template.replace('{filing}', filing)
-   if local:
-      out = query_a_model_ollama(prompt,"",MODEL)["response"]
-   else:
-      out = query_a_model_openai(prompt,"qwen/qwen-2.5-7b-instruct")
+   out = query_a_model_openai(prompt,"qwen/qwen-2.5-7b-instruct")
    return out
 
 
-def parse_product_hs(candidates, description,context,local=False):
+def parse_product_hs(candidates, description,context):
    SCHEMA = {
     "type": "object",
     "properties": {
@@ -138,8 +102,5 @@ def parse_product_hs(candidates, description,context,local=False):
       prompt_template = f.read()
    prompt = prompt_template.replace('{candidates}', candidates).replace('{description}', description).replace('{context}',context)
    
-   if local:
-      out = query_a_model_ollama(prompt,"","qwen2.5:14b",SCHEMA)['response']
-   else:
-      out = query_a_model_openai(prompt,"qwen/qwen-2.5-7b-instruct")
+   out = query_a_model_openai(prompt,"qwen/qwen-2.5-7b-instruct")
    return out

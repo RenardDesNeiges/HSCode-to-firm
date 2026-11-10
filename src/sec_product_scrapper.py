@@ -5,6 +5,7 @@ from src.semantic_search import SemanticSearch
 from tqdm import tqdm
 from datetime import datetime
 semsearch = SemanticSearch()
+import itertools
 import traceback
 
 hscodes = pd.read_excel("data/HSCodeandDescription.xlsx",sheet_name='HS22')
@@ -58,28 +59,23 @@ def ticker_data_to_str(ticker_data):
     out += f' | ' + datetime.now().strftime('%Y-%m-%d/%H-%M-%S') + '\n'
     return out
 
-def parse_ticker(cik,pbar):
-
+def parse_tenk(cik:str, tenk:str,pbar):
     company = {}
-    company['ticker'] = cik
-    pbar.set_description(f'Scrapping the filings '
-                         f'of company {cik}')
-    filing = get_section_10k(cik)
-    filing = secure_sec_length(filing)
+
+    tenk = secure_sec_length(tenk)
     
     pbar.set_description(f'Generating a product '
                          f'list for company {cik}')
-    products = parse_filing(filing)
+    products = parse_filing(tenk)
 
     pbar.set_description(f'Generating context '
                          f'for company {cik}')
-    context = parse_filing_context(filing)
+    context = parse_filing_context(cik)
 
-    company['filing'] = filing
     company['context'] = context
 
     productlist = products.split(',')
-    product_data = {}
+    pdata = {}
     for p in productlist:
         item = {}
 
@@ -98,13 +94,19 @@ def parse_ticker(cik,pbar):
                              f'for product {p} of company {cik}')
         item['result'] = parse_product_hs(item['candidates']\
                                             .to_string(index=False),p, context)
-        product_data[p] = item
+        pdata[p] = item
     pbar.set_description(f'Refining initial guess '
                         f'for company {cik}')
-    company['product data'] = product_data
+    company['product data'] = pdata
     first_guess_list = get_first_guess_list(company)
-    to_remove = refine_product_list(first_guess_list,context,False)
+    company['ig_codes'] = first_guess_list
+    to_remove = refine_product_list(first_guess_list,context)
     company['removed'] = to_remove
+
+    codes = set(itertools.chain.from_iterable(
+        [pdata[k]['result'].replace(' ','').split(',') for k in pdata.keys()]
+    )) - company['removed']
+    company['codes'] = codes
     return company
 
 def get_product_list(ciklist, output_path, error_log_path):
@@ -114,11 +116,11 @@ def get_product_list(ciklist, output_path, error_log_path):
         data = {}
         for cik in ciklist:
             try:
-                ticker_data = parse_ticker(cik,pbar)
-                str_buffer = ticker_data_to_str(ticker_data)
+                cik_data = parse_tenk(cik,pbar)
+                str_buffer = ticker_data_to_str(cik_data)
                 with open(output_path, 'a') as f:
                     f.write(str_buffer)
-                data[cik] = ticker_data
+                data[cik] = cik_data
             except Exception as e:
                 with open(output_path, 'a') as f:
                     f.write(f"{cik} | ERROR \n")

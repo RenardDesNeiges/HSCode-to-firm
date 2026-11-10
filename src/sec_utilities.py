@@ -32,20 +32,15 @@ def extract_between(text):
     return best
 
 
-def get_business_section_cik(cik):
-    filings = Company(cik).get_filings(form="10-K")
-    if filings[0].form == '10-K':
-        filing = filings[0]
-    else:
-        filing = filings[1]
-    tenk = filing.sections()
+def get_section_10k(cik:str,fyear:str):
+    filings = Company(cik).get_filings(form="10-K",year=fyear)
+    try:
+        tenk = filings[0].text()
+    except:
+        return None
 
-    extraction = extract_between(filing.text())
+    extraction = extract_between(tenk)
     if extraction:
         return extraction
     else:
-        return filing.text()
-
-
-def get_section_10k(cik):
-    return get_business_section_cik(cik)
+        return tenk

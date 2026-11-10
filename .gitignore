@@ -7,3 +7,4 @@ sec-edgar-filings/*
 config.py
 .vscode/settings.json
 *.ipynb
+src/__pycache__/*
