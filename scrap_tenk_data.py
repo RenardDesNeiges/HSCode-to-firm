@@ -86,7 +86,7 @@ def main():
                     updates = list(pool.map(process, batch))
                     conn.executemany(
                         """
-                        UPDATE filings SET tenk_section = ?, tag = ? WHERE key = ?
+                        UPDATE filings SET tenk_section = ?, tenk_tag = ? WHERE key = ?
                         """,
                         updates,
                     )

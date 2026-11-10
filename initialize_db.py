@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 DEFAULT_PATH = '~/Documents/Datasets/Compustat/computstat_northamerica_complete_download_24042026.csv'
 DEFAULT_DB_PATH = 'data/hsmap.db'
-SHORT_LIMIT = 10_000
+SHORT_LIMIT = 3000
 
 parser = argparse.ArgumentParser(
     description='Initialize the filings SQLite database from a Compustat CSV file.'
@@ -54,12 +54,15 @@ if os.path.exists(db_path):
     os.remove(db_path)
     print(f'Erased existing database {db_path!r}')
 
-data = pd.read_csv(path)
 
-print(f'{data.shape[0]} firm-year pairs without filtering')
 
-# only accept firm-year pairs between 2000 and 2024
-data = data[(data['fyear']>1999) & (data['fyear']<2025)]
+chunks = pd.read_csv(path, 
+                 usecols=["cik", "fyear","datadate"], 
+                 dtype={"cik": str, "fyear": int},
+                 parse_dates=['datadate'], 
+                 chunksize=10**6)
+
+data = pd.concat([c[c["fyear"].between(2000, 2024)] for c in chunks])
 print(f'{data.shape[0]} firm-year pairs after selecting the right years')
 
 # only accept firm-year pairs with a CIK (i.e. public companies)
@@ -85,12 +88,14 @@ cursor = conn.cursor()
 # Create table with the database schema
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS filings (
-    key        INTEGER PRIMARY KEY AUTOINCREMENT,
-    cik        TEXT    NOT NULL,
-    fyear      TEXT    NOT NULL,
-    tenk_section TEXT,
-    hs_codes   TEXT,
-    tag        TEXT    NOT NULL DEFAULT 'UNPROCESSED'
+    key             INTEGER PRIMARY KEY AUTOINCREMENT,
+    cik             TEXT    NOT NULL,
+    fyear           TEXT    NOT NULL,
+    tenk_section    TEXT,
+    tenk_tag        TEXT    NOT NULL DEFAULT 'NO_DATA',
+    hs_codes        TEXT,
+    hs_output       TEXT    NOT NULL DEFAULT 'NO_DATA',
+    hs_tag          TEXT    NOT NULL DEFAULT 'NO_DATA'
 );
 """)
 
@@ -102,8 +107,8 @@ conn.commit()
 for i in tqdm(range(data.shape[0])):
     row = data.iloc[i]
     cursor.execute(
-        "INSERT INTO filings (cik, fyear, tenk_section, hs_codes, tag) VALUES (?, ?, ?, ?, ?)",
-        (str(int(row['cik'])), str(row['fyear']), None, None, 'UNPROCESSED'),
+        "INSERT INTO filings (cik, fyear) VALUES (?, ?)",
+        (row['cik'], str(row['fyear'])),
     )
     conn.commit()
 
