@@ -1,18 +1,24 @@
 # %%
 import os
 import argparse
+import multiprocessing
 import sqlite3
 import pandas as pd
 from tqdm.auto import tqdm      
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 db_path = 'data/hsmap.db'
-chunk_size = 20 
+chunk_size = 128
 rate_limit = 9
 
 os.environ['EDGAR_RATE_LIMIT_PER_SEC'] = os.environ.get('EDGAR_RATE_LIMIT_PER_SEC', str(rate_limit))
 
-from src.sec_utilities import get_sections_10k, set_rate_limit
+from src.sec_utilities import (
+    SharedRateLimiter,
+    configure_worker,
+    get_sections_10k,
+    worker_data_directory,
+)
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -56,6 +62,15 @@ def iter_null_batches(conn, chunk=chunk_size):
         last_key = rows[-1][0]          # advance past this batch
         yield rows
 
+def _init_worker(counter, requests_per_second, rate_lock, rate_next):
+    """Give each worker its own cache directory and the shared rate limiter."""
+    with counter.get_lock():
+        index = counter.value
+        counter.value += 1
+    limiter = SharedRateLimiter(requests_per_second, rate_lock, rate_next)
+    configure_worker(worker_data_directory(index), limiter)
+
+
 def process_cik(cik, rows):
     """rows: list of (key, fyear). Returns list of (tenk_section, tenk_tag, key)."""
     fyears = sorted({r[1] for r in rows})
@@ -78,7 +93,13 @@ def process_cik(cik, rows):
 
 def main():
     args = parse_args()
-    set_rate_limit(args.rate_limit)
+    ctx = multiprocessing.get_context()
+    workers = max(1, min(32, os.cpu_count() or 1))
+    # Shared by every worker: a counter to name per-worker cache dirs and the
+    # state of the global rate limiter.
+    worker_counter = ctx.Value('i', 0)
+    rate_lock = ctx.Lock()
+    rate_next = ctx.Value('d', 0.0, lock=False)
 
     with sqlite3.connect(args.db_path) as conn:
         total = conn.execute(
@@ -86,10 +107,14 @@ def main():
         ).fetchone()[0]
 
         pbar = tqdm(total=total, unit="row", desc="backfilling tenk_section")
-        workers = max(1, min(32, os.cpu_count() or 1))
 
         try:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
+            with ProcessPoolExecutor(
+                max_workers=workers,
+                mp_context=ctx,
+                initializer=_init_worker,
+                initargs=(worker_counter, args.rate_limit, rate_lock, rate_next),
+            ) as pool:
                 for batch in iter_null_batches(conn, chunk=args.chunk_size):
                     # one task per CIK, fetching all of its still-pending rows
                     min_key = batch[0][0]
