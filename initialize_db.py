@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import os
 import sqlite3
 import sys
@@ -31,7 +32,16 @@ parser.add_argument(
     help=f'only load the first {SHORT_LIMIT} firm-year entries into the database '
          '(useful for a small debug database)',
 )
+parser.add_argument(
+    '--batch-size',
+    type=int,
+    default=1000,
+    help='number of rows inserted per executemany batch (default: 1000)',
+)
 args = parser.parse_args()
+
+if args.batch_size < 1:
+    parser.error('--batch-size must be a positive integer')
 
 path = os.path.expanduser(args.path)
 db_path = os.path.expanduser(args.db_path)
@@ -85,6 +95,11 @@ if args.short:
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 
+# The database is rebuilt from scratch, so durability can be relaxed during the
+# bulk load. This avoids an fsync for every batch.
+cursor.execute("PRAGMA journal_mode = MEMORY")
+cursor.execute("PRAGMA synchronous = OFF")
+
 # Create table with the database schema
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS filings (
@@ -99,17 +114,29 @@ CREATE TABLE IF NOT EXISTS filings (
 );
 """)
 
-# Helpful indexes for common lookups
-cursor.execute("CREATE UNIQUE INDEX idx_cik_fyear ON filings(cik, fyear);")
-
 conn.commit()
 
-for i in tqdm(range(data.shape[0])):
-    row = data.iloc[i]
-    cursor.execute(
-        "INSERT INTO filings (cik, fyear) VALUES (?, ?)",
-        (row['cik'], str(row['fyear'])),
-    )
-    conn.commit()
+# Bulk insert: the whole load runs in a single transaction, batches only drive
+# the progress bar and bound memory usage. A single commit at the end is what
+# makes this fast (no fsync per row).
+rows = zip(data["cik"].astype(str), data["fyear"].astype(str))
+with tqdm(total=data.shape[0]) as pbar:
+    while True:
+        batch = list(itertools.islice(rows, args.batch_size))
+        if not batch:
+            break
+        cursor.executemany(
+            "INSERT INTO filings (cik, fyear) VALUES (?, ?)",
+            batch,
+        )
+        pbar.update(len(batch))
+conn.commit()
+
+# Build the index once, after the load: much cheaper than maintaining it for
+# every inserted row. The rows are already unique thanks to drop_duplicates().
+cursor.execute("CREATE UNIQUE INDEX idx_cik_fyear ON filings(cik, fyear);")
+conn.commit()
+
+conn.close()
 
 
