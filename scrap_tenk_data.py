@@ -4,15 +4,15 @@ import argparse
 import sqlite3
 import pandas as pd
 from tqdm.auto import tqdm      
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 db_path = 'data/hsmap.db'
 chunk_size = 20 
-rate_limit = 7
+rate_limit = 9
 
 os.environ['EDGAR_RATE_LIMIT_PER_SEC'] = os.environ.get('EDGAR_RATE_LIMIT_PER_SEC', str(rate_limit))
 
-from src.sec_utilities import get_section_10k
+from src.sec_utilities import get_sections_10k, set_rate_limit
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -38,14 +38,14 @@ def parse_args():
     return parser.parse_args()
 
 def iter_null_batches(conn, chunk=chunk_size):
-    """Yield batches of rows where tenk_section IS NULL, newest key ascending."""
+    """Yield batches of rows where tenk_section IS NULL, key ascending."""
     last_key = -1
     while True:
         rows = conn.execute(
             """
             SELECT key, cik, fyear, tenk_section
             FROM filings
-            WHERE hs_codes IS NULL AND key > ?
+            WHERE tenk_section IS NULL AND key > ?
             ORDER BY key
             LIMIT ?
             """,
@@ -56,21 +56,29 @@ def iter_null_batches(conn, chunk=chunk_size):
         last_key = rows[-1][0]          # advance past this batch
         yield rows
 
-def process(row):
-    """Stub: return (new_tenk_section, key). Replace with your real logic."""
-    key, cik, fyear, _ = row
-    out = get_section_10k(cik,fyear)
-    if out is None:
-        tag = 'Missing 10-K'
-    else:
-        tag = 'Unprocessed 10-K'
-    return (out, tag, key)
+def process_cik(cik, rows):
+    """rows: list of (key, fyear). Returns list of (tenk_section, tenk_tag, key)."""
+    fyears = sorted({r[1] for r in rows})
+    try:
+        sections = get_sections_10k(cik, fyears)
+    except Exception:
+        # Leave the rows NULL so a later rerun retries this CIK.
+        return []
+
+    updates = []
+    for key, fyear in rows:
+        out = sections.get(fyear)
+        if out is None:
+            tag = 'Missing 10-K'
+        else:
+            tag = 'Unprocessed 10-K'
+        updates.append((out, tag, key))
+    return updates
 
 
 def main():
     args = parse_args()
-    # Set in the parent before spawning workers so they inherit the value at import time.
-    os.environ['EDGAR_RATE_LIMIT_PER_SEC'] = str(args.rate_limit)
+    set_rate_limit(args.rate_limit)
 
     with sqlite3.connect(args.db_path) as conn:
         total = conn.execute(
@@ -78,12 +86,30 @@ def main():
         ).fetchone()[0]
 
         pbar = tqdm(total=total, unit="row", desc="backfilling tenk_section")
+        workers = max(1, min(32, os.cpu_count() or 1))
 
         try:
-            with ProcessPoolExecutor(max_workers=os.cpu_count() or 1) as pool:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
                 for batch in iter_null_batches(conn, chunk=args.chunk_size):
-                    # here the idea is to paralelize the requests
-                    updates = list(pool.map(process, batch))
+                    # one task per CIK, fetching all of its still-pending rows
+                    min_key = batch[0][0]
+                    ciks = list(dict.fromkeys(row[1] for row in batch))
+                    futures = []
+                    for cik in ciks:
+                        rows = conn.execute(
+                            """
+                            SELECT key, fyear FROM filings
+                            WHERE cik = ? AND tenk_section IS NULL AND key >= ?
+                            ORDER BY key
+                            """,
+                            (cik, min_key),
+                        ).fetchall()
+                        futures.append(pool.submit(process_cik, cik, rows))
+
+                    updates = []
+                    for future in as_completed(futures):
+                        updates.extend(future.result())
+
                     conn.executemany(
                         """
                         UPDATE filings SET tenk_section = ?, tenk_tag = ? WHERE key = ?
@@ -91,7 +117,7 @@ def main():
                         updates,
                     )
                     conn.commit()
-                    pbar.update(len(batch))
+                    pbar.update(len(updates))
         finally:
             pbar.close()
 

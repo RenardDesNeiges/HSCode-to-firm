@@ -32,15 +32,35 @@ def extract_between(text):
     return best
 
 
-def get_section_10k(cik:str,fyear:str):
-    filings = Company(cik).get_filings(form="10-K",year=fyear)
-    try:
-        tenk = filings[0].text()
-    except:
-        return None
+def set_rate_limit(requests_per_second: int):
+    """Apply the EDGAR request rate limit to the shared HTTP client."""
+    os.environ['EDGAR_RATE_LIMIT_PER_SEC'] = str(requests_per_second)
+    from edgar import httpclient
 
-    extraction = extract_between(tenk)
-    if extraction:
-        return extraction
-    else:
-        return tenk
+    previous = httpclient.HTTP_MGR
+    httpclient.HTTP_MGR = httpclient.get_http_mgr(request_per_sec_limit=requests_per_second)
+    previous.close()
+
+
+def get_sections_10k(cik, fyears):
+    """Fetch/parse the 10-K Item 1->2 section for several years with ONE Company lookup."""
+    company = Company(cik)
+    sections = {}
+    for fyear in fyears:
+        filings = company.get_filings(form="10-K", year=fyear)
+        try:
+            tenk = filings[0].text()
+        except Exception:
+            sections[fyear] = None
+            continue
+
+        extraction = extract_between(tenk)
+        if extraction:
+            sections[fyear] = extraction
+        else:
+            sections[fyear] = tenk
+    return sections
+
+
+def get_section_10k(cik:str,fyear:str):
+    return get_sections_10k(cik, [fyear]).get(fyear)
