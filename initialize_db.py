@@ -9,7 +9,8 @@ from tqdm import tqdm
 
 DEFAULT_PATH = '~/Documents/Datasets/Compustat/computstat_northamerica_complete_download_24042026.csv'
 DEFAULT_DB_PATH = 'data/hsmap.db'
-SHORT_LIMIT = 3000
+SHORT_LIMIT = 500
+SHORT_SEED = 42
 
 parser = argparse.ArgumentParser(
     description='Initialize the filings SQLite database from a Compustat CSV file.'
@@ -29,7 +30,7 @@ parser.add_argument(
 parser.add_argument(
     '--short',
     action='store_true',
-    help=f'only load the first {SHORT_LIMIT} firm-year entries into the database '
+    help=f'randomly sample {SHORT_LIMIT} firm-year entries for the database '
          '(useful for a small debug database)',
 )
 parser.add_argument(
@@ -94,8 +95,8 @@ data = data[data["sic"].between(1500,3990)]
 print(f'{data.shape[0]} firm-year pairs after narrowing down to large manufacturing firms')
 
 if args.short:
-    data = data.head(SHORT_LIMIT)
-    print(f'{data.shape[0]} firm-year pairs after limiting to the first {SHORT_LIMIT} (--short)')
+    data = data.sample(n=min(SHORT_LIMIT, len(data)), random_state=SHORT_SEED)
+    print(f'{data.shape[0]} firm-year pairs after randomly sampling {SHORT_LIMIT} (--short)')
 
 # Connect (creates the file if it doesn't exist)
 conn = sqlite3.connect(db_path)

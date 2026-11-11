@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Quick web viewer for the hsmap.db filings table."""
+"""Quick web viewer for a filings SQLite database."""
 
+import argparse
 import json
 import os
 import sqlite3
@@ -14,6 +15,19 @@ PORT = int(os.environ.get("WATCH_PORT", "5000"))
 PAGE_SIZE = 100
 
 app = Flask(__name__)
+
+
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description="Serve a local viewer for a filings SQLite database."
+    )
+    parser.add_argument(
+        "db",
+        nargs="?",
+        default=os.environ.get("WATCH_DB", str(ROOT_DIR / "data" / "hsmap.db")),
+        help="path to the SQLite database (default: %(default)s)",
+    )
+    return parser.parse_args()
 
 
 def _db():
@@ -62,8 +76,41 @@ def _parse_hs_codes(value):
     ]
 
 
+def _parse_code_list(value):
+    if isinstance(value, dict):
+        value = [[code, probability, ""] for code, probability in value.items()]
+    if not isinstance(value, list):
+        return []
+    rows = []
+    for item in value:
+        if isinstance(item, dict):
+            code = item.get("code") or item.get("hs_code") or ""
+            probability = item.get("probability", item.get("prob"))
+            description = item.get("description") or ""
+        elif isinstance(item, (list, tuple)):
+            code = item[0] if len(item) > 0 else ""
+            probability = item[1] if len(item) > 1 else None
+            description = item[2] if len(item) > 2 and item[2] else ""
+        else:
+            code, probability, description = item, None, ""
+        rows.append(
+            {
+                "code": "" if code is None else str(code),
+                "probability": probability,
+                "description": str(description) if description else "",
+            }
+        )
+    return rows
+
+
 def _parse_output(value):
-    empty = {"context": "", "products": [], "removed": []}
+    empty = {
+        "context": "",
+        "products": [],
+        "removed": [],
+        "all_codes": [],
+        "removal_probabilities": [],
+    }
     if not value or value == "NO_DATA":
         return empty
     try:
@@ -79,7 +126,23 @@ def _parse_output(value):
     context = parsed.get("context")
     if not isinstance(context, str):
         context = ""
-    return {"context": context, "products": products, "removed": removed}
+    all_codes = _parse_code_list(parsed.get("all_codes"))
+    removal_probabilities = _parse_code_list(parsed.get("removal_probabilities"))
+    descriptions = {
+        row["code"]: row["description"]
+        for row in all_codes
+        if row["description"]
+    }
+    for row in removal_probabilities:
+        if not row["description"]:
+            row["description"] = descriptions.get(row["code"], "")
+    return {
+        "context": context,
+        "products": products,
+        "removed": removed,
+        "all_codes": all_codes,
+        "removal_probabilities": removal_probabilities,
+    }
 
 
 @app.route("/")
@@ -198,12 +261,16 @@ HTML = """<!doctype html>
   .params dt { color:var(--muted); }
   .params dd { margin:0; }
   .context { background:#f9fafb; border:1px solid var(--border); border-radius:6px; padding:10px; font-size:12.5px; line-height:1.45; margin-bottom:16px; white-space:pre-wrap; }
-  .codes { width:100%; font-size:12.5px; border:1px solid var(--border); border-radius:6px; border-collapse:separate; border-spacing:0; overflow:hidden; }
+  .codes { width:100%; font-size:12.5px; border:1px solid var(--border); border-radius:6px; border-collapse:separate; border-spacing:0; overflow:hidden; table-layout:fixed; }
   .codes th { background:#f9fafb; text-align:left; padding:7px 9px; border-bottom:1px solid var(--border); }
-  .codes td { padding:7px 9px; border-bottom:1px solid #f3f4f6; vertical-align:top; }
+  .codes td { padding:7px 9px; border-bottom:1px solid #f3f4f6; vertical-align:top; white-space:normal; overflow-wrap:anywhere; }
   .codes tr:last-child td { border-bottom:none; }
   .codes .p { text-align:right; white-space:nowrap; }
-  .tag { display:inline-block; padding:1px 6px; border-radius:999px; font-size:11px; font-weight:600; }
+  .codes th:nth-child(1), .codes td:nth-child(1) { width:56px; }
+  .codes th:nth-child(2), .codes td:nth-child(2) { width:78px; }
+  .codes th:nth-child(4), .codes td:nth-child(4) { width:92px; }
+  .note { font-size:11.5px; color:var(--muted); margin:-2px 0 6px; }
+  .tag { display:inline-block; padding:1px 6px; border-radius:999px; font-size:11px; font-weight:600; white-space:nowrap; }
   .tag.OK { background:#dcfce7; color:#166534; }
   .tag.EMPTY { background:#e5e7eb; color:#374151; }
   .tag.ERROR { background:#fee2e2; color:#991b1b; }
@@ -380,9 +447,49 @@ HTML = """<!doctype html>
     const codes = d.hs_codes_parsed || [];
     const products = d.products || [];
     const removed = d.removed || [];
-    const codeRows = codes.length ? codes.map(c => `
-      <tr><td>${esc(c.code)}</td><td class="p">${prob(c.probability)}</td><td>${esc(c.description)}</td></tr>
-    `).join('') : `<tr><td colspan="3" class="empty">No HS codes.</td></tr>`;
+    const pickedSet = new Set(codes.map(c => c.code));
+    const removedSet = new Set(removed);
+
+    const byProbDesc = (a, b) =>
+      (Number(b.probability) || 0) - (Number(a.probability) || 0) ||
+      String(a.code).localeCompare(String(b.code));
+
+    const considered = (d.all_codes && d.all_codes.length) ? d.all_codes.slice() : codes.slice();
+    const consideredCodes = new Set(considered.map(c => c.code));
+    for (const c of codes) {
+      if (!consideredCodes.has(c.code)) {
+        considered.push(c);
+        consideredCodes.add(c.code);
+      }
+    }
+    considered.sort(byProbDesc);
+    const consideredRows = considered.length ? considered.map(c => {
+      const status = removedSet.has(c.code)
+        ? '<span class="tag ERROR">Removed</span>'
+        : pickedSet.has(c.code)
+          ? '<span class="tag OK">Picked</span>'
+          : '<span class="tag NO_DATA">Candidate</span>';
+      return `<tr><td>${esc(c.code)}</td><td class="p">${prob(c.probability)}</td><td>${esc(c.description)}</td><td>${status}</td></tr>`;
+    }).join('') : `<tr><td colspan="4" class="empty">No considered HS codes stored.</td></tr>`;
+
+    const removals = (d.removal_probabilities || []).slice();
+    const scoredCodes = new Set(removals.map(r => r.code));
+    for (const code of removed) {
+      if (!scoredCodes.has(code)) {
+        removals.push({code, probability: null, description: ""});
+        scoredCodes.add(code);
+      }
+    }
+    removals.sort(byProbDesc);
+    const removalRows = removals.length ? removals.map(r => {
+      const decision = removedSet.has(r.code)
+        ? '<span class="tag ERROR">Removed</span>'
+        : '<span class="tag OK">Kept</span>';
+      return `<tr><td>${esc(r.code)}</td><td class="p">${prob(r.probability)}</td><td>${esc(r.description)}</td><td>${decision}</td></tr>`;
+    }).join('') : `<tr><td colspan="4" class="empty">No removal scores stored.</td></tr>`;
+
+    const missingAllCodes = !d.all_codes || d.all_codes.length === 0;
+
     detailEl.innerHTML = `
       <h2>${esc(d.conm)}</h2>
       <div class="sub">Filing ${d.key} · CIK ${esc(d.cik)} · FY ${esc(d.fyear)}</div>
@@ -394,13 +501,17 @@ HTML = """<!doctype html>
       </dl>
       <h3>Products</h3>
       <div class="plain">${products.length ? products.map(p => esc(p)).join(', ') : '<span class="empty">None</span>'}</div>
-      <h3>Removed HS codes</h3>
-      <div class="chips">${removed.length ? removed.map(c => `<span class="chip">${esc(c)}</span>`).join('') : '<span class="empty">None</span>'}</div>
       ${d.context ? `<h3>Context</h3><div class="context">${esc(d.context)}</div>` : ''}
-      <h3>Identified HS codes</h3>
+      <h3>Considered HS codes — ${considered.length} entries, ${pickedSet.size} picked</h3>
+      ${missingAllCodes ? '<div class="note">No full candidate list is stored for this row; showing final picks only.</div>' : ''}
       <table class="codes">
-        <thead><tr><th>HS code</th><th class="p">Probability</th><th>Description</th></tr></thead>
-        <tbody>${codeRows}</tbody>
+        <thead><tr><th>Code</th><th class="p">Probability</th><th>Description</th><th>Status</th></tr></thead>
+        <tbody>${consideredRows}</tbody>
+      </table>
+      <h3>Removal scores — P(outlier), ${removals.length} entries, ${removedSet.size} removed</h3>
+      <table class="codes">
+        <thead><tr><th>Code</th><th class="p">Probability</th><th>Description</th><th>Decision</th></tr></thead>
+        <tbody>${removalRows}</tbody>
       </table>
     `;
   }
@@ -417,6 +528,8 @@ HTML = """<!doctype html>
 
 
 if __name__ == "__main__":
+    args = _parse_args()
+    DB_PATH = Path(args.db).expanduser().resolve()
     if not DB_PATH.exists():
         raise SystemExit(f"Database not found: {DB_PATH}")
     print(f"Serving {DB_PATH} at http://127.0.0.1:{PORT}")

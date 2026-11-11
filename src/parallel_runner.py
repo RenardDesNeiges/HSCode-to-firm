@@ -90,6 +90,7 @@ def run_parallel(
     workers=8,
     queue_lines=None,
     desc="Processing",
+    cost_fn=None,
 ):
     for key in ("ok", "empty", "error"):
         stats.setdefault(key, 0)
@@ -123,10 +124,16 @@ def run_parallel(
         in_flight[executor.submit(worker, row)] = (row, time.monotonic())
         return True
 
+    def update_postfix():
+        extra = {"waiting": len(rows) - next_index}
+        if cost_fn is not None:
+            extra["cost"] = f"${cost_fn():.4f}"
+        pbar.set_postfix(**stats, **extra)
+
     for _ in range(workers):
         if not submit_next():
             break
-    pbar.set_postfix(**stats, waiting=len(rows) - next_index)
+    update_postfix()
 
     interrupted = False
     try:
@@ -154,8 +161,7 @@ def run_parallel(
                 pbar.update(1)
                 submit_next()
 
-            if done:
-                pbar.set_postfix(**stats, waiting=len(rows) - next_index)
+            update_postfix()
     except KeyboardInterrupt:
         interrupted = True
         panel.close()

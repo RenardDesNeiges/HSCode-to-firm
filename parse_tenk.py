@@ -59,9 +59,15 @@ TRANSIENT_MARKERS = (
     "ResponseValidation",
 )
 
+
+class EmptyModelResponse(RuntimeError):
+    pass
+
+
 logger = logging.getLogger("parse_tenk")
 _SEMSEARCH = None
 _HS4 = None
+_HS4_DESCRIPTIONS = {}
 _HS_CHAPTERS = ""
 _SEM_LOCK = threading.Lock()
 _PROMPT_TEMPLATE = None
@@ -78,6 +84,7 @@ class FilingResult:
     hs_output: str
     hs_tag: str
     duration_s: float
+    cost_usd: float = 0.0
 
 
 def _parse_args():
@@ -125,7 +132,7 @@ def _is_transient(exc):
 def _call_with_retries(func, *args):
     for attempt in range(MAX_RETRIES + 1):
         try:
-            return func(*args)
+            result = func(*args)
         except Exception as exc:
             if attempt == MAX_RETRIES or not _is_transient(exc):
                 raise
@@ -138,6 +145,18 @@ def _call_with_retries(func, *args):
                 exc,
             )
             time.sleep(delay)
+            continue
+        if result is not None:
+            return result
+        if attempt == MAX_RETRIES:
+            raise EmptyModelResponse(f"{func.__name__} returned None")
+        delay = min(MAX_BACKOFF, 2.0 * 2**attempt) * (1 + random.random())
+        logger.warning(
+            "%s returned None; retrying in %.1fs",
+            func.__name__,
+            delay,
+        )
+        time.sleep(delay)
 
 
 def _first_guess_list(product_data):
@@ -249,39 +268,52 @@ def _run_pipeline(conm, tenk_section):
         ig_codes = ""
     company["ig_codes"] = ig_codes
 
+    removal_probabilities = {}
     removed = set()
     if ig_codes:
         try:
-            removed = set(
-                _call_with_retries(
-                    llm_utilities.refine_product_list, ig_codes, context
-                )
-                or ()
-            )
+            removal_probabilities = _call_with_retries(
+                llm_utilities.refine_product_list_dm_scores, ig_codes, context
+            ) or {}
+            removed = {
+                code
+                for code, probability in removal_probabilities.items()
+                if probability >= llm_utilities.KEV_REFINE_THRESHOLD
+            }
         except Exception as exc:
-            record("refine_product_list", exc)
-            company["error"] = _error_payload("refine_product_list", exc)
+            record("refine_product_list_dm_scores", exc)
+            company["error"] = _error_payload(
+                "refine_product_list_dm_scores", exc
+            )
+            removal_probabilities = {}
+            removed = set()
 
     probabilities = {}
-    codes = set()
+    selected = set()
     for item in product_data.values():
         result = item.get("result")
         if result is None:
             continue
-        codes.update(result.codes)
-        for code in result.codes:
+        selected.update(result.codes)
+        for code, probability in result.probabilities.items():
             probabilities[code] = max(
                 probabilities.get(code, 0.0),
-                result.probabilities.get(code, 0.0),
+                probability,
             )
 
     company["removed"] = sorted(removed)
-    company["hs_probabilities"] = sorted(
-        (code, probability)
-        for code, probability in probabilities.items()
-        if code not in removed
-    )
-    company["codes"] = sorted(codes - removed)
+    company["removal_probabilities"] = [
+        [code, removal_probabilities[code], _HS4_DESCRIPTIONS.get(code, "")]
+        for code in sorted(removal_probabilities)
+    ]
+    company["all_codes"] = [
+        [code, probability, _HS4_DESCRIPTIONS.get(code, "")]
+        for code, probability in sorted(probabilities.items())
+    ]
+    company["codes"] = [
+        [code, probabilities.get(code, 0.0), _HS4_DESCRIPTIONS.get(code, "")]
+        for code in sorted(selected - removed)
+    ]
 
     for item in product_data.values():
         if "candidates" in item:
@@ -294,14 +326,15 @@ def _run_pipeline(conm, tenk_section):
 
 def process_filing(row):
     start = time.monotonic()
+    llm_utilities.reset_thread_cost()
     key = cik = conm = fyear = None
     try:
         key, cik, conm, fyear, tenk_section = row
         company, productlist, first_error = _run_pipeline(
             conm or "", tenk_section or ""
         )
-        codes = company.get("codes") or []
-        hs_codes = ",".join(codes)
+        codes = company.pop("codes", [])
+        hs_codes = json.dumps(codes, ensure_ascii=False)
         if first_error is not None:
             hs_tag = "ERROR:" + type(first_error).__name__
         elif not productlist or not codes:
@@ -314,7 +347,7 @@ def process_filing(row):
             "Filing failed for key=%s cik=%s: %s", key, cik, exc, exc_info=True
         )
         company = {"error": _error_payload("process_filing", exc)}
-        hs_codes = ""
+        hs_codes = "[]"
         hs_tag = "ERROR:" + type(exc).__name__
         hs_output = json.dumps(company, ensure_ascii=False)
     return FilingResult(
@@ -326,6 +359,7 @@ def process_filing(row):
         hs_output=hs_output,
         hs_tag=hs_tag,
         duration_s=time.monotonic() - start,
+        cost_usd=llm_utilities.thread_cost(),
     )
 
 
@@ -336,13 +370,14 @@ def _write_result(conn, result):
     )
     conn.commit()
     logger.info(
-        "key=%s cik=%s conm=%r fyear=%s tag=%s duration=%.1fs",
+        "key=%s cik=%s conm=%r fyear=%s tag=%s duration=%.1fs cost=$%.4f",
         result.key,
         result.cik,
         result.conm,
         result.fyear,
         result.hs_tag,
         result.duration_s,
+        result.cost_usd,
     )
 
 
@@ -353,12 +388,13 @@ def _result_bucket(tag):
 def _print_summary(stats, elapsed_s):
     print(
         "Processed: {processed} | OK: {ok} | EMPTY: {empty} | ERROR: {error} "
-        "| elapsed: {elapsed:.1f}s".format(
+        "| elapsed: {elapsed:.1f}s | cost: ${cost:.4f}".format(
             processed=stats["ok"] + stats["empty"] + stats["error"],
             ok=stats["ok"],
             empty=stats["empty"],
             error=stats["error"],
             elapsed=elapsed_s,
+            cost=llm_utilities.total_cost(),
         )
     )
     print(f"Error log: {ERROR_LOG}")
@@ -371,6 +407,7 @@ def _interrupt(signum, frame):
 def main():
     args = _parse_args()
     _configure_logging()
+    llm_utilities.reset_total_cost()
     signal.signal(signal.SIGTERM, _interrupt)
     conn = _connect(args.db)
     try:
@@ -382,10 +419,11 @@ def main():
             print("Nothing to do")
             return 0
 
-        global _SEMSEARCH, _HS4, _HS_CHAPTERS
+        global _SEMSEARCH, _HS4, _HS4_DESCRIPTIONS, _HS_CHAPTERS
         semsearch = SemanticSearch(product_codes=HSCODES_PATH)
         _SEMSEARCH = semsearch
         _HS4 = semsearch.hscodes4digits[["Code", "Description"]].copy()
+        _HS4_DESCRIPTIONS = dict(zip(_HS4["Code"], _HS4["Description"]))
         _HS_CHAPTERS = semsearch.hscodes[
             semsearch.hscodes["Level"] == 2
         ]["Description"].to_string(index=False, header=False)
@@ -439,6 +477,7 @@ def main():
                 workers=args.workers,
                 queue_lines=args.queue_lines,
                 desc="Parsing 10-K filings",
+                cost_fn=llm_utilities.total_cost,
             )
         except KeyboardInterrupt:
             print("\nInterrupted.", file=sys.stderr)

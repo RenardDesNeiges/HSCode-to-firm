@@ -1,6 +1,7 @@
 import os
 import importlib.util
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 import pandas as pd
@@ -9,8 +10,9 @@ from openrouter import OpenRouter
 import tiktoken
 from deepseek_tokenizer import ds_token
 
-CHEAP_MODEL = "deepseek/deepseek-v4-flash"
-NICE_MODEL = "deepseek/deepseek-v4-flash"
+CHEAP_MODEL = "google/gemma-3-12b-it"
+NICE_MODEL = "google/gemma-3-12b-it"
+TEMPERATURE = 0.0
 
 # Load configuration from the repository root (one directory above this file).
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,6 +36,43 @@ KEV_DECISIONS_URL = getattr(
     "https://openrouter.ai/api/alpha/decisions",
 )
 KEV_HS_THRESHOLD = float(getattr(_config_module, "KEV_HS_THRESHOLD", 0.5))
+KEV_REFINE_THRESHOLD = float(
+    getattr(_config_module, "KEV_REFINE_THRESHOLD", 0.5)
+)
+
+_cost_lock = threading.Lock()
+_total_cost = 0.0
+_thread_cost = threading.local()
+
+
+def _record_cost(cost):
+    try:
+        cost = float(cost)
+    except (TypeError, ValueError):
+        return
+    global _total_cost
+    with _cost_lock:
+        _total_cost += cost
+    _thread_cost.value = getattr(_thread_cost, "value", 0.0) + cost
+
+
+def reset_total_cost():
+    global _total_cost
+    with _cost_lock:
+        _total_cost = 0.0
+
+
+def total_cost():
+    with _cost_lock:
+        return _total_cost
+
+
+def reset_thread_cost():
+    _thread_cost.value = 0.0
+
+
+def thread_cost():
+    return getattr(_thread_cost, "value", 0.0)
 
 
 @dataclass(frozen=True)
@@ -90,7 +129,9 @@ def query_a_model_openai(prompt, model_name=CHEAP_MODEL):
          messages=[
                {"role": "user", "content": prompt}
          ],
+         temperature=TEMPERATURE,
       )
+      _record_cost(getattr(getattr(response, "usage", None), "cost", None))
       return response.choices[0].message.content
 
 def generate_search_terms(product):
@@ -115,6 +156,64 @@ def refine_product_list(first_guess_list,context):
    out = query_a_model_openai(prompt,NICE_MODEL)
    to_remove = {e for e in out.replace(' ','').split(',') if e.isdigit()}
    return to_remove
+
+
+def refine_product_list_dm_scores(first_guess_list, context):
+    """Return P(outlier) for every first-guess HS code."""
+    parsed = []
+    for line in str(first_guess_list).splitlines():
+        code, _, description = line.partition(":")
+        code = code.strip()
+        if code.isdigit():
+            parsed.append((code, description.strip()))
+    if not parsed:
+        return {}
+
+    rows = "\n".join(f"{code} : {description}" for code, description in parsed)
+    state = (
+        f"Company context: {context}\n\n"
+        f"Product categories currently associated with the company:\n{rows}\n\n"
+        "An HS code is an outlier when the product category it describes is "
+        "not part of what this company actually sells. Judge each code "
+        "independently: several or none may be outliers."
+    )
+    questions = {
+        code: {
+            "type": "noul",
+            "instructions": (
+                f"Is HS code {code} an outlier for this company, i.e. is the "
+                f"product category '{description}' not part of what the "
+                f"company actually sells?"
+            ),
+            "criteria": {
+                "true": (
+                    "The product category does not match the company's "
+                    "actual activity."
+                ),
+                "false": (
+                    "The product category is plausible for the company's "
+                    "actual activity."
+                ),
+            },
+        }
+        for code, description in parsed
+    }
+    response = query_decision_model(state, questions, model_name=KEV_MODEL)
+    answers = response.get("answers") or {}
+    return {
+        code: float((answers.get(code) or {}).get("noul", 0.0))
+        for code, _ in parsed
+    }
+
+
+def refine_product_list_dm(first_guess_list, context, threshold=None):
+    """Return the first-guess HS codes Kev classifies as outliers."""
+    threshold = KEV_REFINE_THRESHOLD if threshold is None else float(threshold)
+    scores = refine_product_list_dm_scores(first_guess_list, context)
+    return {
+        code for code, probability in scores.items() if probability >= threshold
+    }
+
 
 def parse_filing(filing):
    prompt_path = os.path.join(PROMPT_DIR, "parse_10_k_filing.txt")
@@ -156,7 +255,9 @@ def query_decision_model(state, questions, model_name=KEV_MODEL,
             continue
 
         if response.ok:
-            return response.json()
+            data = response.json()
+            _record_cost((data.get("usage") or {}).get("cost"))
+            return data
 
         # Retry transient upstream failures; surface everything else.
         if response.status_code in (408, 429, 500, 502, 503, 524, 529) \
