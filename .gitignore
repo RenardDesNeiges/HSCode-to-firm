@@ -9,3 +9,4 @@ config.py
 src/__pycache__
 .gitignore
 data/*.db
+data/*.log
