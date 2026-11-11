@@ -24,7 +24,7 @@ def log_error(error_log_path,e,cik):
         err_f.write("\n")
 
 def parse_tick_data(data):
-    codes = set().union(*[set(data['product data'][p]['result'].replace(' ','').split(',')) for p in data['product data'].keys()])
+    codes = set().union(*[set(data['product data'][p]['result'].codes) for p in data['product data'].keys()])
     codes = {code for code in codes if code.isdigit()}
     return hscodes4digits.loc[list(set(hscodes4digits['Code']).intersection(codes))]
 
@@ -37,7 +37,7 @@ def get_first_guess_list(company):
 def get_hs_code_trace(data):
     out = {}
     for k,v in data['product data'].items():
-        for hs in v['result'].replace(' ','').split(','):
+        for hs in v['result'].codes:
             if hs not in out:
                 out[hs] = {k.strip()}
             else:
@@ -104,7 +104,7 @@ def parse_tenk(cik:str, tenk:str,pbar):
     company['removed'] = to_remove
 
     codes = set(itertools.chain.from_iterable(
-        [pdata[k]['result'].replace(' ','').split(',') for k in pdata.keys()]
+        [pdata[k]['result'].codes for k in pdata.keys()]
     )) - company['removed']
     company['codes'] = codes
     return company

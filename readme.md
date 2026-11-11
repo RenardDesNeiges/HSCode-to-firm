@@ -22,8 +22,8 @@ flowchart TD
     PL -->|generation using qwen2.5:7B| ST["HS search terms"]
     ST -->|extraction using semantic similarity with all-MiniLM-L6-v2| CDD["Product candidates HS Codes"]
     PL -->|extraction using semantic similarity with all-MiniLM-L6-v2| CDD["Product candidates HS Codes"]
-    CDD -->|reranking using qwen2.5:7B| RR["First guess of product HS Codes"]
-    CTX -->|reranking using qwen2.5:7B| RR
+    CDD -->|reranking using Kev-4B (decision model)| RR["First guess of product HS Codes"]
+    CTX -->|reranking using Kev-4B (decision model)| RR
     RR -->|Pruning of gueses with deepseek-v4-flash| FL["Final HS codes"]
 
 ```
@@ -42,7 +42,7 @@ Use `example_config.py` as the template for your own local config file.
 ## Requirements
 
 - Python 3.13 with the following packages: `edgar`, `openrouter`, `tiktoken`, `deepseek_tokenizer`, `sentence-transformers`, `pandas`, `numpy`, `tqdm`.
-- An [OpenRouter](https://openrouter.ai/) API key.
+- An [OpenRouter](https://openrouter.ai/) API key. The same key is used for every LLM step: product extraction and search-term generation call Qwen, pruning calls DeepSeek, and the HS-code reranking step calls `jaredpalmer/kev-4b` through OpenRouter's Decisions API.
 - A valid SEC identity (name and email) for EDGAR downloads.
 
 ## Configuration
@@ -112,5 +112,5 @@ The following inputs are required. Set their paths in `config.py` or in the comm
 
 ### HS-Code extraction notes
 
-- The pipeline calls `qwen2.5:7b` through the OpenRouter API by default. `src/llm_utilities.py` supports local inference through Ollama, but it is not the default.
+- The HS-code reranking step, `parse_product_hs` in `src/llm_utilities.py`, uses the decision model `jaredpalmer/kev-4b` through OpenRouter's Decisions API. It asks Kev one yes/no question per candidate code and keeps every candidate whose probability of being correct is greater than or equal to `KEV_HS_THRESHOLD` (default `0.5`). If no candidate reaches the threshold, the product gets no HS code. These settings live in `config.py` and are documented in `example_config.py`; Kev-4B has an 8,192-token context.
 - Semantic search uses `sentence-transformers/all-MiniLM-L6-v2` on Apple Silicon (`mps`). If you use CPU or CUDA, change the device in `src/semantic_search.py`.
