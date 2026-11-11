@@ -67,13 +67,14 @@ if os.path.exists(db_path):
 
 
 chunks = pd.read_csv(path, 
-                 usecols=["cik", "fyear","datadate"], 
-                 dtype={"cik": str, "fyear": int},
-                 parse_dates=['datadate'], 
-                 chunksize=10**6)
+                usecols=["cik", "conm", "stko", "fyear","datadate"], 
+                dtype={"cik": str, "conm":str, "fyear": int},
+                parse_dates=['datadate'], 
+                chunksize=10**6)
 
-data = pd.concat([c[c["fyear"].between(2000, 2024)] for c in chunks])
-print(f'{data.shape[0]} firm-year pairs after selecting the right years')
+# publicly traded firms have stock ownership code 0 (Publicly traded on a major exchange) or 3 (Publicly traded on a minor exchange), 1 and 2 (subsidiaries) and 4 (company involved in an LBO are out of the question)
+data = pd.concat([c[c["fyear"].between(2000, 2024) & c['stko'].isin([0.,3.])] for c in chunks])
+print(f'{data.shape[0]} firm-year pairs after selecting the right years and filtering to keep only publicly traded firms')
 
 # only accept firm-year pairs with a CIK (i.e. public companies)
 data = data[~data['cik'].isna()] 
@@ -105,6 +106,7 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS filings (
     key             INTEGER PRIMARY KEY AUTOINCREMENT,
     cik             TEXT    NOT NULL,
+    conm            TEXT    NOT NULL,
     fyear           TEXT    NOT NULL,
     tenk_section    TEXT,
     tenk_tag        TEXT    NOT NULL DEFAULT 'NO_DATA',
@@ -119,14 +121,14 @@ conn.commit()
 # Bulk insert: the whole load runs in a single transaction, batches only drive
 # the progress bar and bound memory usage. A single commit at the end is what
 # makes this fast (no fsync per row).
-rows = zip(data["cik"].astype(str), data["fyear"].astype(str))
+rows = zip(data["cik"].astype(str), data["conm"].astype(str),data["fyear"].astype(str))
 with tqdm(total=data.shape[0]) as pbar:
     while True:
         batch = list(itertools.islice(rows, args.batch_size))
         if not batch:
             break
         cursor.executemany(
-            "INSERT INTO filings (cik, fyear) VALUES (?, ?)",
+            "INSERT INTO filings (cik, conm, fyear) VALUES (?, ?, ?)",
             batch,
         )
         pbar.update(len(batch))

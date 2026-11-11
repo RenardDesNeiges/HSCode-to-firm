@@ -16,7 +16,7 @@ os.environ['EDGAR_RATE_LIMIT_PER_SEC'] = os.environ.get('EDGAR_RATE_LIMIT_PER_SE
 from src.sec_utilities import (
     SharedRateLimiter,
     configure_worker,
-    get_sections_10k,
+    get_sections_10k_tagged,
     worker_data_directory,
 )
 
@@ -44,14 +44,19 @@ def parse_args():
     return parser.parse_args()
 
 def iter_null_batches(conn, chunk=chunk_size):
-    """Yield batches of rows where tenk_section IS NULL, key ascending."""
+    """Yield batches of rows that still need a section extraction.
+
+    Rows tagged as permanently unavailable are not retried on every run.
+    """
     last_key = -1
     while True:
         rows = conn.execute(
             """
             SELECT key, cik, fyear, tenk_section
             FROM filings
-            WHERE tenk_section IS NULL AND key > ?
+            WHERE tenk_section IS NULL
+              AND (tenk_tag IS NULL OR tenk_tag NOT IN ('Missing 10-K', 'No 10-K for fyear', 'No Item 1 Business'))
+              AND key > ?
             ORDER BY key
             LIMIT ?
             """,
@@ -75,18 +80,14 @@ def process_cik(cik, rows):
     """rows: list of (key, fyear). Returns list of (tenk_section, tenk_tag, key)."""
     fyears = sorted({r[1] for r in rows})
     try:
-        sections = get_sections_10k(cik, fyears)
+        sections = get_sections_10k_tagged(cik, fyears)
     except Exception:
         # Leave the rows NULL so a later rerun retries this CIK.
         return []
 
     updates = []
     for key, fyear in rows:
-        out = sections.get(fyear)
-        if out is None:
-            tag = 'Missing 10-K'
-        else:
-            tag = 'Unprocessed 10-K'
+        out, tag = sections.get(fyear, (None, 'Document error'))
         updates.append((out, tag, key))
     return updates
 
@@ -103,7 +104,11 @@ def main():
 
     with sqlite3.connect(args.db_path) as conn:
         total = conn.execute(
-            "SELECT COUNT(*) FROM filings WHERE tenk_section IS NULL"
+            """
+            SELECT COUNT(*) FROM filings
+            WHERE tenk_section IS NULL
+              AND (tenk_tag IS NULL OR tenk_tag NOT IN ('Missing 10-K', 'No 10-K for fyear', 'No Item 1 Business'))
+            """
         ).fetchone()[0]
 
         pbar = tqdm(total=total, unit="row", desc="backfilling tenk_section")

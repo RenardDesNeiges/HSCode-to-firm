@@ -97,5 +97,20 @@ The following inputs are required. Set their paths in `config.py` or in the comm
 
 ## Notes
 
+### 10-K section scrapping tags 
+
+`tenk_tag` records the outcome of the scrapping of the 10-K filings for every row. A row is accepted only when the filing's `period_of_report` belongs to the requested `fyear`; the surrounding years are searched only to find filings that were published after the fiscalyear end.
+
+| Tag | Exact meaning | `tenk_section` | Retried on next run? |
+|---|---|---|---|
+| **`OK`** | A filing whose `period_of_report` belongs to `fyear` was read and an Item 1 Business section was extracted. | section text | No |
+| **`Missing 10-K`** | No filing whose form starts with `10-K` was found in the `fyear - 1`, `fyear`, `fyear + 1` discovery window. This is about filing discovery, not download failure. | `NULL` | No |
+| **`No 10-K for fyear`** | At least one 10-K variant was found, but none has a `period_of_report` belonging to `fyear`. The row is not filled from an adjacent year. | `NULL` | No |
+| **`No Item 1 Business`** | At least one exact-year candidate filing was readable, but no candidate produced an Item 1 Business section. Typically the Business section is absent or only exists in an exhibit/amendment. | `NULL` | No |
+| **`Document error`** | No exact-year candidate filing could be read as text, and at least one attempt raised an exception or returned empty. Examples: primary document 404, PDF/paper filing, decoding failure. | `NULL` | Yes |
+
+
+### HS-Code extraction notes
+
 - The pipeline calls `qwen2.5:7b` through the OpenRouter API by default. `src/llm_utilities.py` supports local inference through Ollama, but it is not the default.
 - Semantic search uses `sentence-transformers/all-MiniLM-L6-v2` on Apple Silicon (`mps`). If you use CPU or CUDA, change the device in `src/semantic_search.py`.
