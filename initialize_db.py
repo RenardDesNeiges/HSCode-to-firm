@@ -67,18 +67,18 @@ if os.path.exists(db_path):
 
 
 chunks = pd.read_csv(path, 
-                usecols=["cik", "conm", "stko", "fyear","datadate"], 
+                usecols=["cik","at", "sic", "conm", "stko", "fyear","datadate"], 
                 dtype={"cik": str, "conm":str, "fyear": int},
                 parse_dates=['datadate'], 
                 chunksize=10**6)
 
-# publicly traded firms have stock ownership code 0 (Publicly traded on a major exchange) or 3 (Publicly traded on a minor exchange), 1 and 2 (subsidiaries) and 4 (company involved in an LBO are out of the question)
-data = pd.concat([c[c["fyear"].between(2000, 2024) & c['stko'].isin([0.,3.])] for c in chunks])
+# we focus on publicly traded firms on a major exchange
+# publicly traded firms have stock ownership code 0 (Publicly traded on a major exchange) not 3 (Publicly traded on a minor exchange), 1 and 2 (subsidiaries) and 4 (company involved in an LBO are out of the question)
+data = pd.concat([c[c["fyear"].between(2000, 2024) & c['stko'].isin([0.])] for c in chunks])
 print(f'{data.shape[0]} firm-year pairs after selecting the right years and filtering to keep only publicly traded firms')
 
 # only accept firm-year pairs with a CIK (i.e. public companies)
 data = data[~data['cik'].isna()] 
-print(f'{data.shape[0]} firm-year pairs after removing private firms')
 
 # Remove duplicate cik/fyear pairs, only keep most recent data
 data = data.sort_values(
@@ -87,6 +87,11 @@ data = data.sort_values(
 )
 data = data.drop_duplicates(subset=["cik", "fyear"], keep="last")
 print(f'{data.shape[0]} firm-year pairs after removing duplicates')
+
+# Narrow down to large manufacturing firms
+data = data[data["at"]>1e3]
+data = data[data["sic"].between(1500,3990)]
+print(f'{data.shape[0]} firm-year pairs after narrowing down to large manufacturing firms')
 
 if args.short:
     data = data.head(SHORT_LIMIT)
